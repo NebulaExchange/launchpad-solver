@@ -12,6 +12,7 @@ import { IntentsService } from './intents.service';
 import { LoggerService } from './logger.service';
 import { serializeIntent } from '../utils/hashing';
 import { makeNonReentrant } from '../utils/make-nonreentrant';
+import { tokens } from '../configs/tokens';
 
 const BUY_FEE = 0.01; // 1%
 const SELL_FEE = 0.1; // 10%
@@ -27,6 +28,11 @@ type State = {
   bondingCurve: BondingCurveState;
   nonce: string;
 };
+
+function toIntegerAmountString(amount: string | Big, decimals: number): string {
+  const bigAmount = typeof amount === 'string' ? new Big(amount) : amount;
+  return bigAmount.mul(Big(10).pow(decimals)).round(0, Big.roundDown).toFixed(0);
+}
 
 export class QuoterService {
   private currentState?: State;
@@ -61,7 +67,6 @@ export class QuoterService {
       return;
     }
 
-    const isSell = !!params.exact_amount_in;
     const amount = this.calculateQuote(
       params.exact_amount_in,
       params.exact_amount_out,
@@ -74,16 +79,23 @@ export class QuoterService {
       return;
     }
 
-    // Update and persist new supply
-    const delta = new Big(params.exact_amount_in || amount);
-    const newSupply = isSell
-      ? new Big(currentState.bondingCurve.supply).plus(delta) // selling = supply increases
-      : new Big(currentState.bondingCurve.supply).minus(delta); // buying = supply decreases
-    currentState.bondingCurve.supply = parseInt(newSupply.toFixed(0));
-    fs.writeFileSync(STATE_FILE, JSON.stringify(currentState.bondingCurve, null, 2));
-
     const quoteDeadlineMs = params.min_deadline_ms + quoteDeadlineExtraMs;
     const standard = SignStandardEnum.nep413;
+
+    const tokenInDecimals = tokens.find((t) => t.assetId === params.defuse_asset_identifier_in)?.decimals;
+    // const amountInRaw = params.exact_amount_in
+    //   ? toIntegerAmountString(params.exact_amount_in, tokenInDecimals!)
+    //   : toIntegerAmountString(amount, tokenInDecimals!);
+    const amountInRaw = params.exact_amount_in ?? toIntegerAmountString(amount, tokenInDecimals!);
+
+    const tokenOutDecimals = tokens.find((t) => t.assetId === params.defuse_asset_identifier_out)?.decimals;
+    // const amountOutRaw = params.exact_amount_out
+    //   ? toIntegerAmountString(params.exact_amount_out, tokenOutDecimals!)
+    //   : toIntegerAmountString(amount, tokenOutDecimals!);
+    const amountOutRaw = params.exact_amount_out ?? toIntegerAmountString(amount, tokenOutDecimals!);
+
+    this.logger.debug(`Decimals - tokenIn: ${tokenInDecimals}, tokenOut: ${tokenOutDecimals}`);
+
     const message: IMessage = {
       signer_id: this.nearService.getAccountId(),
       deadline: new Date(Date.now() + quoteDeadlineMs).toISOString(),
@@ -91,8 +103,8 @@ export class QuoterService {
         {
           intent: 'token_diff',
           diff: {
-            [params.defuse_asset_identifier_in]: params.exact_amount_in ? params.exact_amount_in : amount,
-            [params.defuse_asset_identifier_out]: `-${params.exact_amount_out ? params.exact_amount_out : amount}`,
+            [params.defuse_asset_identifier_in]: amountInRaw,
+            [params.defuse_asset_identifier_out]: `-${amountOutRaw}`,
           },
         },
       ],
@@ -106,8 +118,8 @@ export class QuoterService {
     const quoteResp: IQuoteResponseData = {
       quote_id: params.quote_id,
       quote_output: {
-        amount_in: params.exact_amount_out ? amount : undefined,
-        amount_out: params.exact_amount_in ? amount : undefined,
+        amount_in: params.exact_amount_out ? amountInRaw : undefined,
+        amount_out: params.exact_amount_in ? amountOutRaw : undefined,
       },
       signed_data: {
         standard,
@@ -138,6 +150,38 @@ export class QuoterService {
       return getBuyQuote(new Big(amountOut), new Big(state.supply), logger);
     }
     return '0';
+  }
+
+  public applyAcceptedQuote(params: IQuoteRequestData) {
+    if (!this.currentState) {
+      throw new Error('State is not initialized');
+    }
+
+    let delta: Big;
+    const isSell = !!params.exact_amount_in;
+
+    if (params.exact_amount_in) {
+      delta = new Big(params.exact_amount_in);
+    } else if (params.exact_amount_out) {
+      delta = new Big(params.exact_amount_out);
+    } else {
+      throw new Error('Both amount_in and amount_out are missing');
+    }
+
+    const currentSupply = new Big(this.currentState.bondingCurve.supply);
+    const updatedSupply = isSell ? currentSupply.plus(delta) : currentSupply.minus(delta);
+
+    this.currentState.bondingCurve.supply = parseInt(updatedSupply.toFixed(0));
+    fs.writeFileSync(STATE_FILE, JSON.stringify(this.currentState.bondingCurve, null, 2));
+
+    this.logger.info(
+      `Applied accepted ${isSell ? 'sell' : 'buy'} quote. Updated supply: ${this.currentState.bondingCurve.supply}`,
+    );
+  }
+
+  /** Test-only method */
+  public __setTestState(state: State) {
+    this.currentState = state;
   }
 }
 

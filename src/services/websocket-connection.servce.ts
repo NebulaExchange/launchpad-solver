@@ -46,7 +46,11 @@ export class WebsocketConnectionService {
     this.clearReconnectInterval();
   }
 
-  private async sendRequestToRelay<TResult = unknown>(method: RelayMethod, params: unknown[], logger: LoggerService) {
+  private async sendRequestToRelay<TResult = unknown>(
+    method: RelayMethod,
+    params: unknown[],
+    logger: LoggerService,
+  ): Promise<TResult> {
     logger.debug(`Number of pending requests before send: ${Object.keys(this.pendingRequests).length}`);
     const request: IJsonrpcRelayRequest = {
       id: this.requestCounter++,
@@ -173,8 +177,6 @@ export class WebsocketConnectionService {
     const { quote_id, defuse_asset_identifier_in, defuse_asset_identifier_out } = quoteReq;
     const logger = this.logger.toScopeLogger(quote_id);
 
-    logger.info(`Received quote request: ${JSON.stringify(quoteReq)}`);
-
     try {
       if (!this.isTokenPairSupported(defuse_asset_identifier_in, defuse_asset_identifier_out)) {
         logger.debug(`Skipping unsupported pair (${defuse_asset_identifier_in} -> ${defuse_asset_identifier_out})`);
@@ -233,8 +235,8 @@ export class WebsocketConnectionService {
     if (identifierIn === identifierOut) {
       return false;
     }
-    const isSupportedIn = tokens.some((token) => token === identifierIn);
-    const isSupportedOut = tokens.some((token) => token === identifierOut);
+    const isSupportedIn = tokens.some((token) => token.assetId === identifierIn);
+    const isSupportedOut = tokens.some((token) => token.assetId === identifierOut);
     return isSupportedIn && isSupportedOut;
   }
 }
