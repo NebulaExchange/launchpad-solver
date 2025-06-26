@@ -17,7 +17,6 @@ import { tokens } from '../configs/tokens';
 const BUY_FEE = 0.01; // 1%
 const SELL_FEE = 0.1; // 10%
 const STEP_SIZE = new Big(0.02); // $0.02 per token
-const STEP_SIZE_OVER_2 = STEP_SIZE.div(2);
 const STATE_FILE = path.join(__dirname, '../../data/bonding-curve.json');
 
 interface BondingCurveState {
@@ -28,11 +27,6 @@ type State = {
   bondingCurve: BondingCurveState;
   nonce: string;
 };
-
-function toIntegerAmountString(amount: string | Big, decimals: number): string {
-  const bigAmount = typeof amount === 'string' ? new Big(amount) : amount;
-  return bigAmount.mul(Big(10).pow(decimals)).round(0, Big.roundDown).toFixed(0);
-}
 
 export class QuoterService {
   private currentState?: State;
@@ -82,7 +76,7 @@ export class QuoterService {
       return;
     }
 
-    const amount = this.calculateQuote(params, currentState.bondingCurve, logger);
+    const amount = this.calculateQuote(params, logger);
 
     if (amount === '0') {
       logger.info('Calculated amount is 0');
@@ -95,8 +89,8 @@ export class QuoterService {
     const tokenInDecimals = tokens.find((t) => t.assetId === params.defuse_asset_identifier_in)?.decimals;
     const tokenOutDecimals = tokens.find((t) => t.assetId === params.defuse_asset_identifier_out)?.decimals;
 
-    const amountInRaw = params.exact_amount_in ?? toIntegerAmountString(amount, tokenInDecimals!);
-    const amountOutRaw = params.exact_amount_out ?? toIntegerAmountString(amount, tokenOutDecimals!);
+    const amountInRaw = params.exact_amount_in ?? amount;
+    const amountOutRaw = params.exact_amount_out ?? amount;
 
     this.logger.debug(`Decimals - tokenIn: ${tokenInDecimals}, tokenOut: ${tokenOutDecimals}`);
 
@@ -147,23 +141,19 @@ export class QuoterService {
     return quoteResp;
   }
 
-  public calculateQuote(params: IQuoteRequestData, state: BondingCurveState, logger: LoggerService): string {
-    const tokenOut = tokens.find((t) => t.assetId === params.defuse_asset_identifier_out);
-    const tokenOutDecimals = tokenOut?.decimals ?? 24;
+  public calculateQuote(params: IQuoteRequestData, logger: LoggerService): string {
+    const tokenIn = tokens.find((t) => t.assetId === params.defuse_asset_identifier_in)!;
+    const tokenOut = tokens.find((t) => t.assetId === params.defuse_asset_identifier_out)!;
 
-    const rawSupply = state[params.defuse_asset_identifier_out] ?? '0';
-    const supply = new Big(rawSupply).div(Big(10).pow(tokenOutDecimals));
+    const tokenInDecimals = tokenIn.decimals;
+    const tokenOutDecimals = tokenOut.decimals;
 
     if (params.exact_amount_in) {
       logger.info(`Calculating sell quote for amountIn: ${params.exact_amount_in}`);
-      const tokenInDecimals = tokens.find((t) => t.assetId === params.defuse_asset_identifier_in)?.decimals ?? 6;
-      const amountIn = new Big(params.exact_amount_in).div(Big(10).pow(tokenInDecimals));
-      return getSellQuote(amountIn, supply, logger);
+      return getSellQuote(params.exact_amount_in, logger, tokenInDecimals, tokenOutDecimals);
     } else if (params.exact_amount_out) {
       logger.info(`Calculating buy quote for amountOut: ${params.exact_amount_out}`);
-      const tokenOutDecimals = tokens.find((t) => t.assetId === params.defuse_asset_identifier_out)?.decimals ?? 6;
-      const amountOut = new Big(params.exact_amount_out).div(Big(10).pow(tokenOutDecimals));
-      return getBuyQuote(amountOut, supply, logger);
+      return getBuyQuote(params.exact_amount_out, logger, tokenInDecimals, tokenOutDecimals);
     }
 
     logger.warn(`Neither amountIn nor amountOut provided`);
@@ -196,27 +186,38 @@ export class QuoterService {
   }
 }
 
-export function getSellQuote(amountIn: Big, supply: Big, logger: LoggerService): string {
-  const newSupply = supply.plus(amountIn);
-  const payout = newSupply.pow(2).minus(supply.pow(2)).mul(STEP_SIZE_OVER_2);
+export function getSellQuote(
+  exactAmountIn: string,
+  logger: LoggerService,
+  tokenInDecimals: number,
+  tokenOutDecimals: number,
+): string {
+  const amountIn = new Big(exactAmountIn).div(Big(10).pow(tokenInDecimals));
+  const payout = amountIn.mul(STEP_SIZE);
   const payoutAfterFee = payout.mul(new Big(1).minus(SELL_FEE));
+  const payoutYocto = payoutAfterFee.mul(Big(10).pow(tokenOutDecimals)).round(0, Big.roundDown);
   logger.info(
-    `Sell ${amountIn.toFixed()} tokens from supply ${supply.toFixed()} yields $${payoutAfterFee.toFixed(2)} after ${
+    `Sell ${amountIn.toFixed()} tokens yields $${payoutAfterFee.toFixed(6)} after ${
       SELL_FEE * 100
-    }% fee`,
+    }% fee (flat rate $${STEP_SIZE.toFixed(2)} per token)`,
   );
-  return payoutAfterFee.toFixed(2);
+  return payoutYocto.gt(0) ? payoutYocto.toFixed(0) : '1';
 }
 
-export function getBuyQuote(amountOut: Big, supply: Big, logger: LoggerService): string {
+export function getBuyQuote(
+  exactAmountOut: string,
+  logger: LoggerService,
+  tokenInDecimals: number,
+  tokenOutDecimals: number,
+): string {
+  const amountOut = new Big(exactAmountOut).div(Big(10).pow(tokenOutDecimals));
   const grossCost = amountOut.div(new Big(1).minus(BUY_FEE));
-  const newTotal = grossCost.div(STEP_SIZE_OVER_2).add(supply.pow(2));
-  const newSupply = newTotal.sqrt();
-  const amountIn = newSupply.minus(supply);
+  const amountIn = grossCost.div(STEP_SIZE);
+  const amountInYocto = amountIn.mul(Big(10).pow(tokenInDecimals)).round(0, Big.roundDown);
   logger.info(
-    `Buy ${amountOut.toFixed(2)} USD from supply ${supply.toFixed()} costs ${amountIn.toFixed()} tokens (before ${
-      BUY_FEE * 100
-    }% fee)`,
+    `Buy $${amountOut.toFixed(6)} costs ${amountIn.toFixed()} tokens (flat rate $${STEP_SIZE.toFixed(
+      2,
+    )} per token before ${BUY_FEE * 100}% fee)`,
   );
-  return amountIn.toFixed(0);
+  return amountInYocto.gt(0) ? amountInYocto.toFixed(0) : '1';
 }

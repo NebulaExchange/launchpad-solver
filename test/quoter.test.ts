@@ -6,36 +6,55 @@ import { NearService } from '../src/services/near.service';
 import { CacheService } from '../src/services/cache.service';
 import { IntentsService } from '../src/services/intents.service';
 
-const SUPPLY = new Big(1000);
 const BUY_FEE = 0.01;
 const SELL_FEE = 0.1;
+const STEP_SIZE = 0.02;
+
 const logger = new LoggerService('test');
 
 test('getSellQuote should return expected payout and apply fee', () => {
-  const amountIn = new Big(100);
-  const payout = getSellQuote(amountIn, SUPPLY, logger);
+  const tokenInDecimals = 9;
+  const tokenOutDecimals = 6;
 
-  const rawPayout = SUPPLY.plus(amountIn).pow(2).minus(SUPPLY.pow(2)).mul(0.01);
-  const expected = rawPayout.mul(1 - SELL_FEE);
+  const amountInHuman = new Big(100); // 100 tokens
+  const amountInYocto = amountInHuman.mul(Big(10).pow(tokenInDecimals)).toFixed(0);
 
-  expect(Number(payout)).toBeCloseTo(Number(expected.toFixed(2)), 2);
+  const payoutYocto = getSellQuote(amountInYocto, logger, tokenInDecimals, tokenOutDecimals);
+
+  const rawUSD = amountInHuman.mul(STEP_SIZE);
+  const expectedUSD = rawUSD.mul(1 - SELL_FEE);
+  const expectedYocto = expectedUSD.mul(Big(10).pow(tokenOutDecimals)).round(0, Big.roundDown);
+
+  expect(payoutYocto).toBe(expectedYocto.toFixed(0));
 });
 
 test('getBuyQuote should return expected tokens and apply fee', () => {
+  const tokenInDecimals = 9;
+  const tokenOutDecimals = 6;
+
   const amountOutUSD = new Big(500);
-  const costInTokens = getBuyQuote(amountOutUSD, SUPPLY, logger);
+  const amountOutYocto = amountOutUSD.mul(Big(10).pow(tokenOutDecimals)).toFixed(0);
 
-  const gross = amountOutUSD.div(1 - BUY_FEE);
-  const newTotal = gross.div(0.01).add(SUPPLY.pow(2));
-  const expected = newTotal.sqrt().minus(SUPPLY);
+  const amountInYocto = getBuyQuote(amountOutYocto, logger, tokenInDecimals, tokenOutDecimals);
 
-  expect(Number(costInTokens)).toBeCloseTo(Number(expected.toFixed(0)), 0);
+  const grossUSD = amountOutUSD.div(1 - BUY_FEE);
+  const expectedTokens = grossUSD.div(STEP_SIZE);
+  const expectedYocto = expectedTokens.mul(Big(10).pow(tokenInDecimals)).round(0, Big.roundDown);
+
+  expect(amountInYocto).toBe(expectedYocto.toFixed(0));
 });
 
 test('buy then sell should result in small net loss due to fees', () => {
+  const tokenInDecimals = 9;
+  const tokenOutDecimals = 6;
+
   const usdToSpend = new Big(500);
-  const buyTokens = new Big(getBuyQuote(usdToSpend, SUPPLY, logger));
-  const usdBack = new Big(getSellQuote(buyTokens, SUPPLY, logger));
+  const usdToSpendYocto = usdToSpend.mul(Big(10).pow(tokenOutDecimals)).toFixed(0);
+
+  const buyTokensYocto = getBuyQuote(usdToSpendYocto, logger, tokenInDecimals, tokenOutDecimals);
+  const usdBackYocto = getSellQuote(buyTokensYocto, logger, tokenInDecimals, tokenOutDecimals);
+
+  const usdBack = new Big(usdBackYocto).div(Big(10).pow(tokenOutDecimals));
 
   expect(Number(usdBack)).toBeLessThan(Number(usdToSpend));
   expect(Number(usdBack)).toBeGreaterThan(Number(usdToSpend.mul(1 - BUY_FEE - SELL_FEE).toFixed(2)));
@@ -62,7 +81,10 @@ test('quote response uses raw values and formats intent correctly', async () => 
   const service = new QuoterService(mockCache, mockNear, mockIntents);
 
   service.__setTestState({
-    bondingCurve: { supply: 0 },
+    bondingCurve: {
+      'nep141:usdt.tether-token.near': '1000000000000',
+      'nep141:sol.omft.near': '1000000000000000',
+    },
     nonce: '1111111111111111111111111111111111111111111',
   });
 
@@ -70,11 +92,11 @@ test('quote response uses raw values and formats intent correctly', async () => 
     quote_id: 'test-quote-id',
     defuse_asset_identifier_in: 'nep141:usdt.tether-token.near',
     defuse_asset_identifier_out: 'nep141:sol.omft.near',
-    exact_amount_in: '1000',
+    exact_amount_in: '100000000', // 0.1 token with 9 decimals
     min_deadline_ms: 5000,
   });
 
   expect(quote).toBeDefined();
-  expect(quote?.quote_output.amount_out).toMatch(/^\d+$/); // must be raw unit string
+  expect(quote?.quote_output.amount_out).toMatch(/^\d+$/); // raw yocto string
   expect(quote?.signed_data.payload.message).toContain('token_diff');
 });
