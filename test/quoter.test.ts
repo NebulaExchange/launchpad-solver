@@ -78,7 +78,7 @@ jest.mock('../src/configs/tokens', () => ({
 }));
 
 test('quote response uses raw values and formats intent correctly', async () => {
-  const mockCache = new CacheService();
+  const mockCache = new CacheService('./data/test-cache.json');
   const mockNear = {
     getAccountId: () => 'test-account.near',
     signMessage: async () => ({ signature: Buffer.from('sig'), publicKey: { data: Buffer.from('pk') } }),
