@@ -57,6 +57,8 @@ export class QuoterService {
       nonce: this.intentsService.generateDeterministicNonce(`supply:${nonceSeed}`),
     };
 
+    this.cacheService.set('bonding_curve', newState.bondingCurve);
+
     fs.writeFileSync(STATE_FILE, JSON.stringify(bondingCurveState, null, 2));
     this.currentState = newState;
 
@@ -177,6 +179,8 @@ export class QuoterService {
 
     const updatedSupply = isSell ? currentSupply.plus(delta) : currentSupply.minus(delta);
     this.currentState.bondingCurve[assetId] = updatedSupply.toFixed(0);
+
+    this.cacheService.set('bonding_curve', this.currentState.bondingCurve);
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(this.currentState.bondingCurve, null, 2));
     this.logger.info(
