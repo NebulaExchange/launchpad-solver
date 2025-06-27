@@ -88,7 +88,7 @@ export class WebsocketConnectionService {
   }
 
   private handleOpen(logger: LoggerService) {
-    // logger.info(`WebSocket client connected to ${wsRelayUrl}`);
+    logger.info(`WebSocket client connected to ${wsRelayUrl}`);
     this.reconnectAttempts = 0;
     this.clearReconnectInterval();
     this.subscribe(RelayEventKind.QUOTE, logger);
@@ -96,7 +96,7 @@ export class WebsocketConnectionService {
   }
 
   private handleClose(logger: LoggerService) {
-    // logger.info('WebSocket client closed. Attempting to restart...');
+    logger.info('WebSocket client closed. Attempting to restart...');
     this.setReconnectInterval(logger);
   }
 
@@ -114,7 +114,7 @@ export class WebsocketConnectionService {
         }
 
         this.reconnectAttempts++;
-        // logger.info(`Attempting to reconnect... (attempt ${this.reconnectAttempts})`);
+        logger.info(`Attempting to reconnect... (attempt ${this.reconnectAttempts})`);
         this.start();
       }, 5000);
     }
@@ -189,7 +189,7 @@ export class WebsocketConnectionService {
       }
 
       const result = await this.sendRequestToRelay(RelayMethod.QUOTE_RESPONSE, [quoteResp], logger);
-      // logger.info(`Sent quote response to relay, result: ${JSON.stringify(result)}`);
+      logger.info(`Sent quote response to relay, result: ${JSON.stringify(result)}`);
     } catch (error) {
       logger.error(
         `Error while processing quote ${defuse_asset_identifier_in}->${defuse_asset_identifier_out}`,
@@ -201,7 +201,7 @@ export class WebsocketConnectionService {
   private async processQuoteStatus(data: IPublishedQuoteData) {
     const logger = this.logger.toScopeLogger(data.intent_hash);
 
-    // logger.info(`Received intent: ${JSON.stringify(data)}`);
+    logger.info(`Received intent: ${JSON.stringify(data)}`);
 
     try {
       const quote = this.cacheService.get<IQuoteResponseData>(data.quote_hash);
