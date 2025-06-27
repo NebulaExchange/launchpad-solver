@@ -39,3 +39,4 @@ env/*
 
 # data
 data/bonding-curve.json
+data/cache.json

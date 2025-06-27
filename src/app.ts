@@ -7,7 +7,17 @@ import { HttpService } from './services/http.service';
 import { WebsocketConnectionService } from './services/websocket-connection.servce';
 
 export async function app() {
-  const cacheService = new CacheService();
+  const cacheService = new CacheService('./data/cache.json');
+  cacheService.loadFromDisk();
+
+  process.on('SIGINT', () => {
+    cacheService.persistToDisk();
+    process.exit();
+  });
+  process.on('SIGTERM', () => {
+    cacheService.persistToDisk();
+    process.exit();
+  });
 
   const nearService = new NearService();
   await nearService.init();
