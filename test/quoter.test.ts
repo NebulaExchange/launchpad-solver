@@ -8,7 +8,8 @@ import { IntentsService } from '../src/services/intents.service';
 
 const BUY_FEE = 0.01;
 const SELL_FEE = 0.1;
-const STEP_SIZE = 0.02;
+const STEP_SIZE = new Big(0.02);
+const STEP_SIZE_OVER_TWO = STEP_SIZE.div(2);
 
 const logger = new LoggerService('test');
 
@@ -19,9 +20,12 @@ test('getSellQuote should return expected payout and apply fee', () => {
   const amountInHuman = new Big(100); // 100 tokens
   const amountInYocto = amountInHuman.mul(Big(10).pow(tokenInDecimals)).toFixed(0);
 
-  const payoutYocto = getSellQuote(amountInYocto, logger, tokenInDecimals, tokenOutDecimals);
+  const currentSupply = new Big(1000); // 1000 tokens in supply
+  const payoutYocto = getSellQuote(amountInYocto, logger, tokenInDecimals, tokenOutDecimals, currentSupply);
 
-  const rawUSD = amountInHuman.mul(STEP_SIZE);
+  const start = currentSupply;
+  const end = currentSupply.plus(amountInHuman);
+  const rawUSD = STEP_SIZE_OVER_TWO.mul(end.pow(2).minus(start.pow(2)));
   const expectedUSD = rawUSD.mul(1 - SELL_FEE);
   const expectedYocto = expectedUSD.mul(Big(10).pow(tokenOutDecimals)).round(0, Big.roundDown);
 
@@ -35,11 +39,14 @@ test('getBuyQuote should return expected tokens and apply fee', () => {
   const amountOutUSD = new Big(500);
   const amountOutYocto = amountOutUSD.mul(Big(10).pow(tokenOutDecimals)).toFixed(0);
 
-  const amountInYocto = getBuyQuote(amountOutYocto, logger, tokenInDecimals, tokenOutDecimals);
+  const currentSupply = new Big(1000); // 1000 tokens in supply
+  const amountInYocto = getBuyQuote(amountOutYocto, logger, tokenInDecimals, tokenOutDecimals, currentSupply);
 
   const grossUSD = amountOutUSD.div(1 - BUY_FEE);
-  const expectedTokens = grossUSD.div(STEP_SIZE);
-  const expectedYocto = expectedTokens.mul(Big(10).pow(tokenInDecimals)).round(0, Big.roundDown);
+  const target = grossUSD.div(STEP_SIZE_OVER_TWO).plus(currentSupply.pow(2));
+  const end = target.sqrt();
+  const amountInHuman = end.minus(currentSupply);
+  const expectedYocto = amountInHuman.mul(Big(10).pow(tokenInDecimals)).round(0, Big.roundUp);
 
   expect(amountInYocto).toBe(expectedYocto.toFixed(0));
 });
@@ -48,12 +55,15 @@ test('buy then sell should result in small net loss due to fees', () => {
   const tokenInDecimals = 9;
   const tokenOutDecimals = 6;
 
+  const currentSupply = new Big(1000);
   const usdToSpend = new Big(500);
   const usdToSpendYocto = usdToSpend.mul(Big(10).pow(tokenOutDecimals)).toFixed(0);
 
-  const buyTokensYocto = getBuyQuote(usdToSpendYocto, logger, tokenInDecimals, tokenOutDecimals);
-  const usdBackYocto = getSellQuote(buyTokensYocto, logger, tokenInDecimals, tokenOutDecimals);
+  const buyTokensYocto = getBuyQuote(usdToSpendYocto, logger, tokenInDecimals, tokenOutDecimals, currentSupply);
+  const buyAmount = new Big(buyTokensYocto).div(Big(10).pow(tokenInDecimals));
+  const sellSupply = currentSupply.plus(buyAmount);
 
+  const usdBackYocto = getSellQuote(buyTokensYocto, logger, tokenInDecimals, tokenOutDecimals, sellSupply);
   const usdBack = new Big(usdBackYocto).div(Big(10).pow(tokenOutDecimals));
 
   expect(Number(usdBack)).toBeLessThan(Number(usdToSpend));
@@ -82,8 +92,8 @@ test('quote response uses raw values and formats intent correctly', async () => 
 
   service.__setTestState({
     bondingCurve: {
-      'nep141:usdt.tether-token.near': '1000000000000',
-      'nep141:sol.omft.near': '1000000000000000',
+      'nep141:usdt.tether-token.near': '1000000000000', // 1_000 USDT with 6 decimals
+      'nep141:sol.omft.near': '1000000000000000', // 1_000 SOL with 9 decimals
     },
     nonce: '1111111111111111111111111111111111111111111',
   });

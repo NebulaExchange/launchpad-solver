@@ -17,6 +17,7 @@ import { tokens } from '../configs/tokens';
 const BUY_FEE = 0.01; // 1%
 const SELL_FEE = 0.1; // 10%
 const STEP_SIZE = new Big(0.02); // $0.02 per token
+const STEP_SIZE_OVER_TWO = new Big(0.01);
 const STATE_FILE = path.join(__dirname, '../../data/bonding-curve.json');
 
 interface BondingCurveState {
@@ -148,12 +149,15 @@ export class QuoterService {
     const tokenInDecimals = tokenIn.decimals;
     const tokenOutDecimals = tokenOut.decimals;
 
+    const currentSupplyYocto = this.currentState!.bondingCurve[tokenIn.assetId];
+    const currentSupply = new Big(currentSupplyYocto).div(Big(10).pow(tokenIn.decimals));
+
     if (params.exact_amount_in) {
       logger.info(`Calculating sell quote for amountIn: ${params.exact_amount_in}`);
-      return getSellQuote(params.exact_amount_in, logger, tokenInDecimals, tokenOutDecimals);
+      return getSellQuote(params.exact_amount_in, logger, tokenInDecimals, tokenOutDecimals, currentSupply);
     } else if (params.exact_amount_out) {
       logger.info(`Calculating buy quote for amountOut: ${params.exact_amount_out}`);
-      return getBuyQuote(params.exact_amount_out, logger, tokenInDecimals, tokenOutDecimals);
+      return getBuyQuote(params.exact_amount_out, logger, tokenInDecimals, tokenOutDecimals, currentSupply);
     }
 
     logger.warn(`Neither amountIn nor amountOut provided`);
@@ -191,15 +195,20 @@ export function getSellQuote(
   logger: LoggerService,
   tokenInDecimals: number,
   tokenOutDecimals: number,
+  currentSupply: Big, // new param (as Big)
 ): string {
   const amountIn = new Big(exactAmountIn).div(Big(10).pow(tokenInDecimals));
-  const payout = amountIn.mul(STEP_SIZE);
+  const start = currentSupply;
+  const end = currentSupply.plus(amountIn);
+
+  const payout = STEP_SIZE_OVER_TWO.mul(end.pow(2).minus(start.pow(2))); // a/2 * (s+q)^2 - s^2
   const payoutAfterFee = payout.mul(new Big(1).minus(SELL_FEE));
   const payoutYocto = payoutAfterFee.mul(Big(10).pow(tokenOutDecimals)).round(0, Big.roundDown);
+
   logger.info(
     `Sell ${amountIn.toFixed()} tokens yields $${payoutAfterFee.toFixed(6)} after ${
       SELL_FEE * 100
-    }% fee (flat rate $${STEP_SIZE.toFixed(2)} per token)`,
+    }% fee (bonding curve with a=${STEP_SIZE.toFixed()})`,
   );
   return payoutYocto.gt(0) ? payoutYocto.toFixed(0) : '1';
 }
@@ -209,15 +218,22 @@ export function getBuyQuote(
   logger: LoggerService,
   tokenInDecimals: number,
   tokenOutDecimals: number,
+  currentSupply: Big, // new param (as Big)
 ): string {
   const amountOut = new Big(exactAmountOut).div(Big(10).pow(tokenOutDecimals));
-  const grossCost = amountOut.div(new Big(1).minus(BUY_FEE));
-  const amountIn = grossCost.div(STEP_SIZE);
-  const amountInYocto = amountIn.mul(Big(10).pow(tokenInDecimals)).round(0, Big.roundDown);
+  const grossOut = amountOut.div(new Big(1).minus(BUY_FEE));
+
+  const start = currentSupply;
+  // Solve: a/2 * ((s + q)^2 - s^2) = grossOut
+  // (s + q)^2 = 2 * grossOut / a + s^2
+  const target = grossOut.div(STEP_SIZE_OVER_TWO).plus(start.pow(2));
+  const end = target.sqrt();
+  const amountIn = end.minus(start);
+
+  const amountInYocto = amountIn.mul(Big(10).pow(tokenInDecimals)).round(0, Big.roundUp); // round up to ensure sufficient payment
+
   logger.info(
-    `Buy $${amountOut.toFixed(6)} costs ${amountIn.toFixed()} tokens (flat rate $${STEP_SIZE.toFixed(
-      2,
-    )} per token before ${BUY_FEE * 100}% fee)`,
+    `Buy $${amountOut.toFixed()} requires ${amountIn.toFixed()} tokens before fee (bonding curve with a=${STEP_SIZE.toFixed()})`,
   );
   return amountInYocto.gt(0) ? amountInYocto.toFixed(0) : '1';
 }
