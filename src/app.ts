@@ -4,22 +4,22 @@ import { DBService } from './services/db.service';
 import { IntentsService } from './services/intents.service';
 import { NearService } from './services/near.service';
 import { QuoterService } from './services/quoter.service';
+import { StateManagerService } from './services/state-manager.service';
 import { HttpService } from './services/http.service';
 import { WebsocketConnectionService } from './services/websocket-connection.servce';
 
 export async function app() {
-  const cacheService = new CacheService('./data/cache.json');
-  cacheService.loadFromDisk();
+  const cacheService = new CacheService();
 
   const dbService = new DBService();
   await dbService.init();
 
-  process.on('SIGINT', () => {
-    cacheService.persistToDisk();
+  process.on('SIGINT', async () => {
+    await stateManagerService.persistToDbNow();
     process.exit();
   });
-  process.on('SIGTERM', () => {
-    cacheService.persistToDisk();
+  process.on('SIGTERM', async () => {
+    await stateManagerService.persistToDbNow();
     process.exit();
   });
 
@@ -28,7 +28,10 @@ export async function app() {
 
   const intentsService = new IntentsService(nearService);
 
-  const quoterService = new QuoterService(cacheService, dbService, nearService, intentsService);
+  const stateManagerService = new StateManagerService(cacheService, dbService, intentsService);
+  await stateManagerService.loadFromDb();
+
+  const quoterService = new QuoterService(stateManagerService, nearService);
   await quoterService.updateCurrentState();
 
   const cronService = new CronService(quoterService);
