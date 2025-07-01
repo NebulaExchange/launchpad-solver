@@ -15,7 +15,7 @@ export class NearService {
     this.near = await connect(nearConnectionConfig);
     this.keyStore = this.near.config.keyStore;
 
-    const keyPair = KeyPair.fromString(nearAccountConfig.privateKey);
+    const keyPair = KeyPair.fromString(nearAccountConfig.privateKey as `ed25519:${string}`);
     await this.keyStore.setKey(nearNetworkId, nearAccountConfig.accountId, keyPair);
     this.account = await this.near.account(nearAccountConfig.accountId);
   }

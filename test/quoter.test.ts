@@ -4,6 +4,7 @@ import { LoggerService } from '../src/services/logger.service';
 import { QuoterService } from '../src/services/quoter.service';
 import { NearService } from '../src/services/near.service';
 import { CacheService } from '../src/services/cache.service';
+import { DBService } from '../src/services/db.service';
 import { IntentsService } from '../src/services/intents.service';
 
 const BUY_FEE = 0.01;
@@ -79,6 +80,13 @@ jest.mock('../src/configs/tokens', () => ({
 
 test('quote response uses raw values and formats intent correctly', async () => {
   const mockCache = new CacheService('./data/test-cache.json');
+  const mockDbService = {
+    appendState: jest.fn().mockResolvedValue(undefined),
+    init: jest.fn().mockResolvedValue(undefined),
+    readAll: jest.fn().mockResolvedValue([]),
+    readLatest: jest.fn().mockResolvedValue([]),
+    close: jest.fn().mockResolvedValue(undefined),
+  } as unknown as DBService;
   const mockNear = {
     getAccountId: () => 'test-account.near',
     signMessage: async () => ({ signature: Buffer.from('sig'), publicKey: { data: Buffer.from('pk') } }),
@@ -88,7 +96,7 @@ test('quote response uses raw values and formats intent correctly', async () => 
     getBalancesOnContract: async () => ['1000000000', '1000000000000'],
   } as unknown as IntentsService;
 
-  const service = new QuoterService(mockCache, mockNear, mockIntents);
+  const service = new QuoterService(mockCache, mockDbService, mockNear, mockIntents);
 
   service.__setTestState({
     bondingCurve: {

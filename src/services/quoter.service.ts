@@ -3,8 +3,10 @@ import bs58 from 'bs58';
 import fs from 'fs';
 import path from 'path';
 import { IMessage, SignStandardEnum } from '../interfaces/intents.interface';
+import { BondingCurveState, QuoterState } from '../interfaces/quoter.interface';
 import { IQuoteRequestData, IQuoteResponseData } from '../interfaces/websocket.interface';
 import { CacheService } from './cache.service';
+import { DBService } from './db.service';
 import { intentsContract } from '../configs/intents.config';
 import { quoteDeadlineExtraMs, quoteDeadlineMaxMs } from '../configs/quoter.config';
 import { NearService } from './near.service';
@@ -20,21 +22,13 @@ const STEP_SIZE = new Big(0.02); // $0.02 per token
 const STEP_SIZE_OVER_TWO = new Big(0.01);
 const STATE_FILE = path.join(__dirname, '../../data/bonding-curve.json');
 
-interface BondingCurveState {
-  [assetId: string]: string; // balances in yocto
-}
-
-type State = {
-  bondingCurve: BondingCurveState;
-  nonce: string;
-};
-
 export class QuoterService {
-  private currentState?: State;
+  private currentState?: QuoterState;
   private logger = new LoggerService('quoter');
 
   public constructor(
     private readonly cacheService: CacheService,
+    private readonly dbService: DBService,
     private readonly nearService: NearService,
     private readonly intentsService: IntentsService,
   ) {}
@@ -52,12 +46,13 @@ export class QuoterService {
 
     const nonceSeed = assetIds.map((id, i) => `${id}:${balances[i]}`).join('|');
 
-    const newState: State = {
+    const newState: QuoterState = {
       bondingCurve: bondingCurveState,
       nonce: this.intentsService.generateDeterministicNonce(`supply:${nonceSeed}`),
     };
 
     this.cacheService.set('bonding_curve', newState.bondingCurve);
+    this.dbService.appendState(newState.bondingCurve);
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(bondingCurveState, null, 2));
     this.currentState = newState;
@@ -181,6 +176,7 @@ export class QuoterService {
     this.currentState.bondingCurve[assetId] = updatedSupply.toFixed(0);
 
     this.cacheService.set('bonding_curve', this.currentState.bondingCurve);
+    this.dbService.appendState(this.currentState.bondingCurve);
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(this.currentState.bondingCurve, null, 2));
     this.logger.info(
@@ -189,7 +185,7 @@ export class QuoterService {
   }
 
   /** Test-only method */
-  public __setTestState(state: State) {
+  public __setTestState(state: QuoterState) {
     this.currentState = state;
   }
 }
