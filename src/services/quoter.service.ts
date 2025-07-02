@@ -1,15 +1,12 @@
 import Big from 'big.js';
 import bs58 from 'bs58';
-import fs from 'fs';
-import path from 'path';
 import { IMessage, SignStandardEnum } from '../interfaces/intents.interface';
 import { IQuoteRequestData, IQuoteResponseData } from '../interfaces/websocket.interface';
-import { CacheService } from './cache.service';
 import { intentsContract } from '../configs/intents.config';
 import { quoteDeadlineExtraMs, quoteDeadlineMaxMs } from '../configs/quoter.config';
 import { NearService } from './near.service';
-import { IntentsService } from './intents.service';
 import { LoggerService } from './logger.service';
+import { StateManagerService } from './state-manager.service';
 import { serializeIntent } from '../utils/hashing';
 import { makeNonReentrant } from '../utils/make-nonreentrant';
 import { tokens } from '../configs/tokens';
@@ -18,49 +15,17 @@ const BUY_FEE = 0.01; // 1%
 const SELL_FEE = 0.1; // 10%
 const STEP_SIZE = new Big(0.02); // $0.02 per token
 const STEP_SIZE_OVER_TWO = new Big(0.01);
-const STATE_FILE = path.join(__dirname, '../../data/bonding-curve.json');
-
-interface BondingCurveState {
-  [assetId: string]: string; // balances in yocto
-}
-
-type State = {
-  bondingCurve: BondingCurveState;
-  nonce: string;
-};
 
 export class QuoterService {
-  private currentState?: State;
   private logger = new LoggerService('quoter');
 
   public constructor(
-    private readonly cacheService: CacheService,
+    private readonly stateManagerService: StateManagerService,
     private readonly nearService: NearService,
-    private readonly intentsService: IntentsService,
   ) {}
 
   public updateCurrentState = makeNonReentrant(async () => {
-    const sortedTokens = [...tokens].sort((a, b) => a.assetId.localeCompare(b.assetId));
-    const assetIds = sortedTokens.map((t) => t.assetId);
-    const balances = await this.intentsService.getBalancesOnContract(assetIds);
-
-    const bondingCurveState: BondingCurveState = {};
-    assetIds.forEach((assetId, idx) => {
-      bondingCurveState[assetId] = balances[idx];
-      this.logger.info(`${assetId} balance: ${balances[idx]}`);
-    });
-
-    const nonceSeed = assetIds.map((id, i) => `${id}:${balances[i]}`).join('|');
-
-    const newState: State = {
-      bondingCurve: bondingCurveState,
-      nonce: this.intentsService.generateDeterministicNonce(`supply:${nonceSeed}`),
-    };
-
-    fs.writeFileSync(STATE_FILE, JSON.stringify(bondingCurveState, null, 2));
-    this.currentState = newState;
-
-    this.logger.debug(`Updated bonding curve state: ${JSON.stringify(this.currentState)}`);
+    await this.stateManagerService.updateFromChain();
   });
 
   public async getQuoteResponse(params: IQuoteRequestData): Promise<IQuoteResponseData | undefined> {
@@ -71,11 +36,7 @@ export class QuoterService {
       return;
     }
 
-    const { currentState } = this;
-    if (!currentState) {
-      logger.error(`Quoter state is not yet initialized`);
-      return;
-    }
+    const currentState = this.stateManagerService.getCurrentState();
 
     const amount = this.calculateQuote(params, logger);
 
@@ -110,7 +71,7 @@ export class QuoterService {
     };
 
     const messageStr = JSON.stringify(message);
-    const nonce = currentState.nonce;
+    const nonce = currentState!.nonce;
     const recipient = intentsContract;
     const quoteHash = serializeIntent(messageStr, recipient, nonce, standard);
     const signature = await this.nearService.signMessage(quoteHash);
@@ -133,8 +94,6 @@ export class QuoterService {
       },
     };
 
-    this.cacheService.set(bs58.encode(quoteHash), quoteResp, quoteDeadlineMs / 1000);
-
     this.logger.info(`amountInRaw: ${amountInRaw}, amountOutRaw: ${amountOutRaw}`);
     this.logger.info(`Generated message: ${messageStr}`);
     this.logger.info(`Quote hash: ${bs58.encode(quoteHash)}`);
@@ -149,7 +108,8 @@ export class QuoterService {
     const tokenInDecimals = tokenIn.decimals;
     const tokenOutDecimals = tokenOut.decimals;
 
-    const currentSupplyYocto = this.currentState!.bondingCurve[tokenIn.assetId];
+    const currentState = this.stateManagerService.getCurrentState();
+    const currentSupplyYocto = currentState!.bondingCurve[tokenIn.assetId];
     const currentSupply = new Big(currentSupplyYocto).div(Big(10).pow(tokenIn.decimals));
 
     if (params.exact_amount_in) {
@@ -164,29 +124,12 @@ export class QuoterService {
     return '0';
   }
 
-  public applyAcceptedQuote(params: IQuoteRequestData) {
-    if (!this.currentState) {
-      throw new Error('State is not initialized');
-    }
-
+  public async applyAcceptedQuote(params: IQuoteRequestData) {
     const isSell = !!params.exact_amount_in;
     const assetId = isSell ? params.defuse_asset_identifier_out : params.defuse_asset_identifier_in;
+    const delta = params.exact_amount_in ?? params.exact_amount_out ?? '0';
 
-    const delta = new Big(params.exact_amount_in ?? params.exact_amount_out ?? '0');
-    const currentSupply = new Big(this.currentState.bondingCurve[assetId] ?? '0');
-
-    const updatedSupply = isSell ? currentSupply.plus(delta) : currentSupply.minus(delta);
-    this.currentState.bondingCurve[assetId] = updatedSupply.toFixed(0);
-
-    fs.writeFileSync(STATE_FILE, JSON.stringify(this.currentState.bondingCurve, null, 2));
-    this.logger.info(
-      `Applied accepted ${isSell ? 'sell' : 'buy'} quote on ${assetId}. Updated supply: ${updatedSupply.toFixed(0)}`,
-    );
-  }
-
-  /** Test-only method */
-  public __setTestState(state: State) {
-    this.currentState = state;
+    await this.stateManagerService.applyTradeDelta(assetId, delta, isSell);
   }
 }
 
