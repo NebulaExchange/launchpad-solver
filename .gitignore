@@ -36,7 +36,3 @@ lerna-debug.log*
 env/*
 !env/.env.example
 !env/.env.compose
-
-# data
-data/bonding-curve.json
-data/cache.json
